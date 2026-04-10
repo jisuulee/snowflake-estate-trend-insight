@@ -1,0 +1,10 @@
+Model           Train R2   Test R2  Test MAE  Test RMSE      Gap
+-----------------------------------------------------------------
+ZERO_3M           0.9605    0.7906     36.44      64.92   0.1698
+ZERO_6M           0.9633    0.7947     36.76      64.29   0.1687
+MEAN_3M           0.9076    0.7938     36.42      64.42   0.1138
+MEAN_6M           0.9120    0.7931     36.14      64.55   0.1190
+REMOVE_3M         0.9493    0.7885     36.38      65.26   0.1608
+REMOVE_6M         0.9546    0.7972     36.27      63.89   0.1574
+
+Best params used: {'colsample_bytree': 0.8, 'learning_rate': 0.1, 'max_depth': 4, 'min_child_weight': 10, 'n_estimators': 100, 'reg_alpha': 0, 'reg_lambda': 5.0, 'subsample': 0.8}

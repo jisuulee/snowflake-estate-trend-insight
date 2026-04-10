@@ -1,0 +1,11 @@
+Test rows (after dropna): 831
+
+=== Test Performance (2025 Data) ===
+MAE:  40.10
+RMSE: 72.01
+R2:   0.7424
+
+=== Train Performance (2023-2024) ===
+R2:   0.9357
+
+R2 Gap (Train-Test): 0.1932

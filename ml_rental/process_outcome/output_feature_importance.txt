@@ -1,0 +1,17 @@
+=== ZERO_6M Feature Importance (CONTRACT_COUNT 예측) ===
+Rank  Feature                             Importance
+-------------------------------------------------------
+1     CONTRACT_COUNT_LAG1                     0.6223  *******************************
+2     CONTRACT_COUNT_LAG2                     0.1991  *********
+3     CONTRACT_COUNT_LAG3                     0.0543  **
+4     MONTH_SIN                               0.0364  *
+5     MONTH_COS                               0.0208  *
+6     CONTRACT_COUNT_LAG6                     0.0137  
+7     CHANGE_MEME_PRICE_RATE_LAG3             0.0092  
+8     CHANGE_MEME_PRICE_RATE_LAG6             0.0086  
+9     CHANGE_MEME_PRICE_RATE_LAG1             0.0080  
+10    FGI_LAG6                                0.0070  
+11    CHANGE_MEME_PRICE_RATE_LAG2             0.0064  
+12    FGI_LAG2                                0.0051  
+13    FGI_LAG3                                0.0047  
+14    FGI_LAG1                                0.0043  
