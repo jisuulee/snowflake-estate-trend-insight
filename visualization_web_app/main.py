@@ -8,7 +8,6 @@
 """
 
 import os
-import json
 import logging
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -16,7 +15,7 @@ from contextlib import asynccontextmanager
 import pandas as pd
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -75,7 +74,7 @@ for _prefix in ("RENTAL", "INTERNET"):
         TABLES[_name] = f"MY_DB.PUBLIC.{_name}"
 
 sf_session: Optional[Session] = None
-model_cache: dict = {}  # {(name, version): model_version_obj}
+model_cache: dict = {}
 
 
 def get_session() -> Session:
@@ -231,6 +230,16 @@ async def get_filters(table_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _resolve_pred_col(result: pd.DataFrame) -> pd.DataFrame:
+    input_cols_upper = [c.upper() for c in FEATURES_6M]
+    extra_upper = {"YEAR_MONTH", "STATE", "CITY", "CONTRACT_COUNT"}
+    pred_candidates = [
+        c for c in result.columns
+        if c.upper() not in input_cols_upper and c.upper() not in extra_upper
+    ]
+    pred_col = pred_candidates[-1] if pred_candidates else result.columns[-1]
+    return result.rename(columns={pred_col: "PREDICTION"})
+
 @app.post("/api/predict")
 async def predict(req: PredictRequest):
     if req.table not in TABLES:
@@ -266,11 +275,11 @@ async def predict(req: PredictRequest):
 
         input_cols = [c.upper() for c in FEATURES_6M]
         extra_cols = ["YEAR_MONTH", "STATE", "CITY", "CONTRACT_COUNT"]
-        pred_candidates = [c for c in result.columns if c.upper() not in [x.upper() for x in input_cols + extra_cols + list(result.columns[:0])]]
-        if pred_candidates:
-            pred_col = pred_candidates[-1]
-        else:
-            pred_col = result.columns[-1]
+        pred_candidates = [
+            c for c in result.columns
+            if c.upper() not in [x.upper() for x in input_cols + extra_cols]
+        ]
+        pred_col = pred_candidates[-1] if pred_candidates else result.columns[-1]
 
         result = result.rename(columns={pred_col: "PREDICTION"})
 
@@ -292,7 +301,12 @@ async def predict(req: PredictRequest):
                 ss_res = float(np.sum(diff ** 2))
                 ss_tot = float(np.sum((actual.values - np.mean(actual.values)) ** 2))
                 r2 = float(1 - ss_res / ss_tot) if ss_tot != 0 else 0.0
-                metrics = {"mae": round(mae, 2), "rmse": round(rmse, 2), "r2": round(r2, 4), "count": len(actual)}
+                metrics = {
+                    "mae": round(mae, 2),
+                    "rmse": round(rmse, 2),
+                    "r2": round(r2, 4),
+                    "count": len(actual),
+                }
 
         chart_data = None
         if "CONTRACT_COUNT" in result.columns and "PREDICTION" in result.columns:
@@ -306,8 +320,8 @@ async def predict(req: PredictRequest):
                 monthly = result.groupby("YEAR_MONTH").agg(
                     actual_avg=("CONTRACT_COUNT", "mean"),
                     predicted_avg=("PREDICTION", "mean"),
-                ).reset_index()
-                monthly = monthly.sort_values("YEAR_MONTH")
+                ).reset_index().sort_values("YEAR_MONTH")
+
                 chart_data["monthly"] = {
                     "labels": [str(d)[:10] for d in monthly["YEAR_MONTH"].tolist()],
                     "actual_avg": [round(v, 2) for v in monthly["actual_avg"].tolist()],
@@ -320,6 +334,7 @@ async def predict(req: PredictRequest):
                     predicted_avg=("PREDICTION", "mean"),
                     count=("CONTRACT_COUNT", "count"),
                 ).reset_index().sort_values("count", ascending=False)
+
                 chart_data["by_state"] = {
                     "labels": by_state["STATE"].tolist(),
                     "actual_avg": [round(v, 2) for v in by_state["actual_avg"].tolist()],
@@ -344,110 +359,6 @@ async def predict(req: PredictRequest):
         logger.error(f"예측 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"예측 실패: {e}")
 
-
-def _resolve_pred_col(result: pd.DataFrame) -> pd.DataFrame:
-    input_cols_upper = [c.upper() for c in FEATURES_6M]
-    extra_upper = {"YEAR_MONTH", "STATE", "CITY", "CONTRACT_COUNT"}
-    pred_candidates = [
-        c for c in result.columns
-        if c.upper() not in input_cols_upper and c.upper() not in extra_upper
-    ]
-    pred_col = pred_candidates[-1] if pred_candidates else result.columns[-1]
-    return result.rename(columns={pred_col: "PREDICTION"})
-
-
-@app.post("/api/insights")
-async def get_insights(req: PredictRequest):
-    if req.table not in TABLES:
-        raise HTTPException(status_code=404, detail=f"테이블 '{req.table}'을 찾을 수 없습니다.")
-
-    full_name = TABLES[req.table]
-    try:
-        session = get_session()
-        input_df = session.sql(f"SELECT * FROM {full_name} LIMIT 5000")
-        mv = get_model(req.model_name, req.model_version)
-        result = mv.run(input_df, function_name="predict").to_pandas()
-
-        if result.empty:
-            return {"status": "empty"}
-
-        result = _resolve_pred_col(result)
-
-        cols_upper = {c.upper(): c for c in result.columns}
-
-        def col(name):
-            return cols_upper.get(name.upper())
-
-        # 1. FGI by STATE
-        fgi_by_state = None
-        fgi_c = col("FGI_LAG1")
-        state_c = col("STATE")
-        if fgi_c and state_c:
-            df = result.groupby(state_c)[fgi_c].mean().reset_index().sort_values(fgi_c, ascending=False)
-            fgi_by_state = {
-                "labels": df[state_c].tolist(),
-                "values": [round(float(v), 2) if not (np.isnan(v) or np.isinf(v)) else 0 for v in df[fgi_c]],
-            }
-
-        # 2. 집값 변화율 상위/하위 10 by CITY
-        price_top10_up = price_top10_down = None
-        price_c = col("CHANGE_MEME_PRICE_RATE_LAG1")
-        city_c = col("CITY")
-        if price_c and state_c and city_c:
-            df = result.groupby([state_c, city_c])[price_c].mean().reset_index()
-            df = df.dropna(subset=[price_c])
-            df["label"] = df[state_c] + " " + df[city_c]
-
-            top_up = df.nlargest(10, price_c)
-            price_top10_up = {
-                "labels": top_up["label"].tolist(),
-                "values": [round(float(v), 4) for v in top_up[price_c]],
-            }
-            top_down = df.nsmallest(10, price_c)
-            price_top10_down = {
-                "labels": top_down["label"].tolist(),
-                "values": [round(float(v), 4) for v in top_down[price_c]],
-            }
-
-        # 3. CONTRACT_COUNT 예상 변화율 상위/하위 10 by CITY
-        contract_top10_up = contract_top10_down = None
-        lag1_c = col("CONTRACT_COUNT_LAG1")
-        pred_c = "PREDICTION"
-        if lag1_c and pred_c in result.columns and city_c and state_c:
-            result["_CHANGE_RATE"] = (
-                (result[pred_c] - result[lag1_c]) / (result[lag1_c].abs() + 1e-6) * 100
-            )
-            df = result.groupby([state_c, city_c])["_CHANGE_RATE"].mean().reset_index()
-            df = df.dropna(subset=["_CHANGE_RATE"])
-            df["label"] = df[state_c] + " " + df[city_c]
-
-            top_up = df.nlargest(10, "_CHANGE_RATE")
-            contract_top10_up = {
-                "labels": top_up["label"].tolist(),
-                "values": [round(float(v), 2) for v in top_up["_CHANGE_RATE"]],
-            }
-            top_down = df.nsmallest(10, "_CHANGE_RATE")
-            contract_top10_down = {
-                "labels": top_down["label"].tolist(),
-                "values": [round(float(v), 2) for v in top_down["_CHANGE_RATE"]],
-            }
-
-        return {
-            "status": "success",
-            "fgi_by_state": fgi_by_state,
-            "price_top10_up": price_top10_up,
-            "price_top10_down": price_top10_down,
-            "contract_top10_up": contract_top10_up,
-            "contract_top10_down": contract_top10_down,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"인사이트 분석 실패: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"인사이트 분석 실패: {e}")
-
-
 @app.get("/api/data/{table_name}")
 async def get_data(
     table_name: str,
@@ -459,6 +370,7 @@ async def get_data(
 
     full_name = TABLES[table_name]
     where = f" WHERE STATE = '{state}'" if state else ""
+
     try:
         df = safe_query(f"SELECT * FROM {full_name}{where} LIMIT {limit}")
 
@@ -470,6 +382,7 @@ async def get_data(
                 def safe_float(v):
                     f = float(v)
                     return None if (np.isnan(f) or np.isinf(f)) else round(f, 4)
+
                 stats[col] = {
                     "mean": safe_float(num_cols[col].mean()),
                     "std": safe_float(num_cols[col].std()),
@@ -488,10 +401,141 @@ async def get_data(
             "data": df.fillna("").to_dict(orient="records"),
             "stats": stats,
         }
+
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"데이터 조회 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"데이터 조회 실패: {e}")
+    
+@app.post("/api/insights")
+async def get_insights(req: PredictRequest):
+    if req.table not in TABLES:
+        raise HTTPException(status_code=404, detail=f"테이블 '{req.table}'을 찾을 수 없습니다.")
+
+    full_name = TABLES[req.table]
+    try:
+        session = get_session()
+        input_df = session.sql(f"SELECT * FROM {full_name} LIMIT 5000")
+        mv = get_model(req.model_name, req.model_version)
+        result = mv.run(input_df, function_name="predict").to_pandas()
+
+        if result.empty:
+            return {"status": "empty"}
+
+        result = _resolve_pred_col(result)
+        cols_upper = {c.upper(): c for c in result.columns}
+
+        def col(name):
+            return cols_upper.get(name.upper())
+
+        fgi_by_state = None
+        fgi_c = col("FGI_LAG1")
+        state_c = col("STATE")
+        if fgi_c and state_c:
+            df = result.groupby(state_c)[fgi_c].mean().reset_index().sort_values(fgi_c, ascending=False)
+            fgi_by_state = {
+                "labels": df[state_c].tolist(),
+                "values": [
+                    round(float(v), 2) if pd.notna(v) and not np.isinf(v) else 0
+                    for v in df[fgi_c]
+                ],
+            }
+
+        price_top10_up = price_top10_down = None
+        price_c = col("CHANGE_MEME_PRICE_RATE_LAG1")
+        city_c = col("CITY")
+        if price_c and state_c and city_c:
+            df = result.groupby([state_c, city_c])[price_c].mean().reset_index()
+            df = df.dropna(subset=[price_c])
+            df["label"] = df[state_c].astype(str) + " " + df[city_c].astype(str)
+
+            top_up = df.nlargest(10, price_c)
+            price_top10_up = {
+                "labels": top_up["label"].tolist(),
+                "values": [round(float(v), 4) for v in top_up[price_c]],
+            }
+
+            top_down = df.nsmallest(10, price_c)
+            price_top10_down = {
+                "labels": top_down["label"].tolist(),
+                "values": [round(float(v), 4) for v in top_down[price_c]],
+            }
+
+        contract_top10_up = contract_top10_down = None
+        lag1_c = col("CONTRACT_COUNT_LAG1")
+        pred_c = "PREDICTION"
+        if lag1_c and pred_c in result.columns and city_c and state_c:
+            result["_CHANGE_RATE"] = (
+                (result[pred_c] - result[lag1_c]) / (result[lag1_c].abs() + 1e-6) * 100
+            )
+            df = result.groupby([state_c, city_c])["_CHANGE_RATE"].mean().reset_index()
+            df = df.dropna(subset=["_CHANGE_RATE"])
+            df["label"] = df[state_c].astype(str) + " " + df[city_c].astype(str)
+
+            top_up = df.nlargest(10, "_CHANGE_RATE")
+            contract_top10_up = {
+                "labels": top_up["label"].tolist(),
+                "values": [round(float(v), 2) for v in top_up["_CHANGE_RATE"]],
+            }
+
+            top_down = df.nsmallest(10, "_CHANGE_RATE")
+            contract_top10_down = {
+                "labels": top_down["label"].tolist(),
+                "values": [round(float(v), 2) for v in top_down["_CHANGE_RATE"]],
+            }
+
+        map_data = None
+        if state_c and fgi_c and lag1_c and pred_c in result.columns:
+            map_df = result.groupby(state_c).agg(
+                fgi=(fgi_c, "mean"),
+                prev_contract=(lag1_c, "mean"),
+                predicted_contract=(pred_c, "mean"),
+            ).reset_index()
+
+            map_df["contract_change_rate"] = (
+                (map_df["predicted_contract"] - map_df["prev_contract"])
+                / (map_df["prev_contract"].abs() + 1e-6) * 100
+            )
+
+            def trend_label(x):
+                if pd.isna(x):
+                    return "변화 없음"
+                if x > 0:
+                    return "증가"
+                if x < 0:
+                    return "감소"
+                return "변화 없음"
+
+            map_df["contract_trend"] = map_df["contract_change_rate"].apply(trend_label)
+
+            map_data = [
+                {
+                    "region": str(row[state_c]),
+                    "fgi": round(float(row["fgi"]), 2) if pd.notna(row["fgi"]) and not np.isinf(row["fgi"]) else 0,
+                    "contract_change_rate": round(float(row["contract_change_rate"]), 2)
+                    if pd.notna(row["contract_change_rate"]) and not np.isinf(row["contract_change_rate"])
+                    else 0,
+                    "contract_trend": row["contract_trend"],
+                }
+                for _, row in map_df.iterrows()
+            ]
+
+        return {
+            "status": "success",
+            "fgi_by_state": fgi_by_state,
+            "price_top10_up": price_top10_up,
+            "price_top10_down": price_top10_down,
+            "contract_top10_up": contract_top10_up,
+            "contract_top10_down": contract_top10_down,
+            "map_data": map_data,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"인사이트 분석 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"인사이트 분석 실패: {e}")
 
 
 @app.get("/api/health")

@@ -6,6 +6,13 @@
     <title>부동산 지수와 아정당 거래 상관 관계 분석 및 예측</title>
     <link rel="stylesheet" href="/static/style.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- Leaflet -->
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   </head>
   <body>
     <nav class="navbar">
@@ -26,6 +33,7 @@
       <p class="match-notice">
         모델과 테이블을 동일한 카테고리(RENTAL / INTERNET)로 매칭해야 합니다.
       </p>
+
       <div class="controls">
         <div class="control-group">
           <label>모델 선택</label>
@@ -33,30 +41,35 @@
             <option value="">로딩 중...</option>
           </select>
         </div>
+
         <div class="control-group">
           <label>버전</label>
           <select id="predictModelVersion">
             <option value="">-</option>
           </select>
         </div>
+
         <div class="control-group">
           <label>테이블 선택</label>
           <select id="predictTable">
             <option value="">로딩 중...</option>
           </select>
         </div>
+
         <div class="control-group">
           <label>지역 (시/도)</label>
           <select id="predictState">
             <option value="">전체</option>
           </select>
         </div>
+
         <div class="control-group">
           <label>시/군/구</label>
           <select id="predictCity">
             <option value="">전체</option>
           </select>
         </div>
+
         <div class="control-group">
           <label>행 수 제한</label>
           <input
@@ -67,6 +80,7 @@
             max="5000"
           />
         </div>
+
         <button class="btn-primary" id="btnPredict" onclick="runPredict()">
           예측 실행
         </button>
@@ -90,6 +104,7 @@
           <div class="metric-value" id="metricCount">-</div>
         </div>
       </div>
+
       <p class="section-desc" id="metricsDesc" style="display: none">
         모델이 실제 거래량을 얼마나 정확하게 예측했는지 나타내는 지표입니다.
         R²가 1에 가까울수록, MAE·RMSE가 낮을수록 예측 품질이 높습니다.
@@ -104,6 +119,7 @@
           </p>
           <canvas id="scatterChart"></canvas>
         </div>
+
         <div class="chart-container">
           <h3>월별 평균 비교</h3>
           <p class="chart-desc">
@@ -113,6 +129,7 @@
           <canvas id="monthlyChart"></canvas>
         </div>
       </div>
+
       <div class="charts-row" id="chartsRow2" style="display: none">
         <div class="chart-container">
           <h3>잔차 분포</h3>
@@ -122,6 +139,7 @@
           </p>
           <canvas id="residualChart"></canvas>
         </div>
+
         <div class="chart-container">
           <h3>지역별 평균 비교</h3>
           <p class="chart-desc">
@@ -138,6 +156,7 @@
           선택한 조건의 원본 데이터와 모델이 예측한 거래량(PREDICTION)을 행별로
           확인합니다.
         </p>
+
         <div class="table-wrapper">
           <table id="resultTable">
             <thead id="resultHead"></thead>
@@ -150,6 +169,7 @@
         <div class="spinner"></div>
         <span>모델 추론 중... (첫 실행 시 30초 이상 걸릴 수 있습니다)</span>
       </div>
+
       <div class="error-msg" id="predictError" style="display: none"></div>
     </div>
 
@@ -158,6 +178,7 @@
       <p class="match-notice">
         모델과 테이블을 동일한 카테고리(RENTAL / INTERNET)로 매칭해야 합니다.
       </p>
+
       <div class="controls">
         <div class="control-group">
           <label>모델</label>
@@ -165,18 +186,21 @@
             <option value="">로딩 중...</option>
           </select>
         </div>
+
         <div class="control-group">
           <label>버전</label>
           <select id="insightsModelVersion">
             <option value="">-</option>
           </select>
         </div>
+
         <div class="control-group">
           <label>테이블</label>
           <select id="insightsTable">
             <option value="">로딩 중...</option>
           </select>
         </div>
+
         <button class="btn-primary" id="btnInsights" onclick="runInsights()">
           분석 실행
         </button>
@@ -186,8 +210,47 @@
         <div class="spinner"></div>
         <span>분석 중... (첫 실행 시 시간이 걸릴 수 있습니다)</span>
       </div>
+
       <div class="error-msg" id="insightsError" style="display: none"></div>
+
       <div id="insightsContent" style="display: none">
+        <!-- 지도 -->
+        <div class="info-card" style="margin-bottom: 24px">
+          <h3>지역별 FGI 지도</h3>
+          <p class="section-desc">
+            지도에서 각 지역의 공포·탐욕 지수를 색상으로 확인할 수 있습니다.
+            지역을 클릭하면 FGI와 계약 증감 정보를 볼 수 있습니다.
+          </p>
+          <div id="koreaMap" style="height: 520px"></div>
+        </div>
+
+        <!-- 지도 클릭 상세 -->
+        <div
+          class="info-card"
+          id="regionDetailCard"
+          style="display: none; margin-bottom: 24px"
+        >
+          <h3>선택 지역 상세 정보</h3>
+          <table class="info-table">
+            <tr>
+              <td>지역</td>
+              <td id="detailRegion">-</td>
+            </tr>
+            <tr>
+              <td>FGI</td>
+              <td id="detailFgi">-</td>
+            </tr>
+            <tr>
+              <td>계약 변화율</td>
+              <td id="detailContractChange">-</td>
+            </tr>
+            <tr>
+              <td>계약 추이</td>
+              <td id="detailContractTrend">-</td>
+            </tr>
+          </table>
+        </div>
+
         <!-- FGI by state -->
         <div class="info-card" style="margin-bottom: 24px">
           <h3>지역별 FGI (Fear &amp; Greed Index)</h3>
@@ -196,8 +259,11 @@
             대한 기대 심리(탐욕)가 강하고, 낮을수록 위축(공포) 상태를
             나타냅니다.
           </p>
-          <div style="height: 320px"><canvas id="fgiStateChart"></canvas></div>
+          <div style="height: 320px">
+            <canvas id="fgiStateChart"></canvas>
+          </div>
         </div>
+
         <!-- 집값 -->
         <div
           style="
@@ -213,8 +279,11 @@
               직전 시점 대비 매매가 변화율(CHANGE_MEME_PRICE_RATE_LAG1) 평균이
               가장 높은 시/군/구입니다.
             </p>
-            <div style="height: 340px"><canvas id="priceUpChart"></canvas></div>
+            <div style="height: 340px">
+              <canvas id="priceUpChart"></canvas>
+            </div>
           </div>
+
           <div class="info-card">
             <h3 style="color: #ff6b6b">집값 하락 예상 TOP 10</h3>
             <p class="section-desc">
@@ -226,6 +295,7 @@
             </div>
           </div>
         </div>
+
         <!-- 거래량 -->
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px">
           <div class="info-card">
@@ -238,6 +308,7 @@
               <canvas id="contractUpChart"></canvas>
             </div>
           </div>
+
           <div class="info-card">
             <h3 style="color: #ff6b6b">거래량 감소 예상 TOP 10</h3>
             <p class="section-desc">
@@ -261,12 +332,14 @@
             <option value="">로딩 중...</option>
           </select>
         </div>
+
         <div class="control-group">
           <label>지역</label>
           <select id="exploreState">
             <option value="">전체</option>
           </select>
         </div>
+
         <div class="control-group">
           <label>행 수</label>
           <input
@@ -277,12 +350,15 @@
             max="1000"
           />
         </div>
+
         <button class="btn-primary" onclick="loadExploreData()">조회</button>
       </div>
+
       <div class="loading" id="exploreLoading" style="display: none">
         <div class="spinner"></div>
         <span>데이터 조회 중...</span>
       </div>
+
       <div id="exploreContent"></div>
       <div class="error-msg" id="exploreError" style="display: none"></div>
     </div>
