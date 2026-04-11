@@ -1,0 +1,926 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>부동산 거래량 예측</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  </head>
+  <body>
+    <nav class="navbar">
+      <div class="nav-brand">부동산 거래량 예측</div>
+      <div class="nav-status" id="connectionStatus">연결 확인 중...</div>
+    </nav>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="predict">예측 실행</button>
+      <button class="tab" data-tab="insights">인사이트</button>
+      <button class="tab" data-tab="explore">데이터 탐색</button>
+    </div>
+
+    <!-- 예측 실행 탭 -->
+    <div class="tab-content active" id="tab-predict">
+      <p class="match-notice">
+        모델과 테이블을 동일한 카테고리(RENTAL / INTERNET)로 매칭해야 합니다.
+      </p>
+      <div class="controls">
+        <div class="control-group">
+          <label>모델 선택</label>
+          <select id="predictModelName" onchange="onModelNameChange()">
+            <option value="">로딩 중...</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>버전</label>
+          <select id="predictModelVersion">
+            <option value="">-</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>테이블 선택</label>
+          <select id="predictTable">
+            <option value="">로딩 중...</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>지역 (시/도)</label>
+          <select id="predictState">
+            <option value="">전체</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>시/군/구</label>
+          <select id="predictCity">
+            <option value="">전체</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>행 수 제한</label>
+          <input
+            type="number"
+            id="predictLimit"
+            value="500"
+            min="1"
+            max="5000"
+          />
+        </div>
+        <button class="btn-primary" id="btnPredict" onclick="runPredict()">
+          예측 실행
+        </button>
+      </div>
+
+      <div class="metrics-row" id="metricsRow" style="display: none">
+        <div class="metric-card">
+          <div class="metric-label">MAE</div>
+          <div class="metric-value" id="metricMAE">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">RMSE</div>
+          <div class="metric-value" id="metricRMSE">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">R²</div>
+          <div class="metric-value" id="metricR2">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">데이터 수</div>
+          <div class="metric-value" id="metricCount">-</div>
+        </div>
+      </div>
+      <p class="section-desc" id="metricsDesc" style="display: none">
+        모델이 실제 거래량을 얼마나 정확하게 예측했는지 나타내는 지표입니다.
+        R²가 1에 가까울수록, MAE·RMSE가 낮을수록 예측 품질이 높습니다.
+      </p>
+
+      <div class="charts-row" id="chartsRow" style="display: none">
+        <div class="chart-container">
+          <h3>실제 vs 예측</h3>
+          <p class="chart-desc">
+            각 데이터 포인트의 실제 거래량(X축)과 예측 거래량(Y축)을 비교합니다.
+            점이 대각선에 가까울수록 예측 정확도가 높습니다.
+          </p>
+          <canvas id="scatterChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <h3>월별 평균 비교</h3>
+          <p class="chart-desc">
+            월별로 집계한 실제 평균 거래량과 예측 평균 거래량의 추이를
+            비교합니다. 시간 흐름에 따른 예측 패턴을 확인할 수 있습니다.
+          </p>
+          <canvas id="monthlyChart"></canvas>
+        </div>
+      </div>
+      <div class="charts-row" id="chartsRow2" style="display: none">
+        <div class="chart-container">
+          <h3>잔차 분포</h3>
+          <p class="chart-desc">
+            잔차(실제 - 예측)의 빈도 분포입니다. 0을 중심으로 좌우 대칭에
+            가까울수록 모델이 편향 없이 예측하고 있음을 의미합니다.
+          </p>
+          <canvas id="residualChart"></canvas>
+        </div>
+        <div class="chart-container">
+          <h3>지역별 평균 비교</h3>
+          <p class="chart-desc">
+            시/도별 평균 거래량과 예측값을 비교합니다. 지역 간 예측 오차가 크게
+            나타나는 지역을 한눈에 파악할 수 있습니다.
+          </p>
+          <canvas id="stateChart"></canvas>
+        </div>
+      </div>
+
+      <div id="predictTable-container" style="display: none">
+        <h3>예측 결과 테이블 <span id="tableRowCount"></span></h3>
+        <p class="section-desc">
+          선택한 조건의 원본 데이터와 모델이 예측한 거래량(PREDICTION)을 행별로
+          확인합니다.
+        </p>
+        <div class="table-wrapper">
+          <table id="resultTable">
+            <thead id="resultHead"></thead>
+            <tbody id="resultBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="loading" id="predictLoading" style="display: none">
+        <div class="spinner"></div>
+        <span>모델 추론 중... (첫 실행 시 30초 이상 걸릴 수 있습니다)</span>
+      </div>
+      <div class="error-msg" id="predictError" style="display: none"></div>
+    </div>
+
+    <!-- 인사이트 탭 -->
+    <div class="tab-content" id="tab-insights">
+      <p class="match-notice">
+        모델과 테이블을 동일한 카테고리(RENTAL / INTERNET)로 매칭해야 합니다.
+      </p>
+      <div class="controls">
+        <div class="control-group">
+          <label>모델</label>
+          <select id="insightsModelName" onchange="onInsightsModelNameChange()">
+            <option value="">로딩 중...</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>버전</label>
+          <select id="insightsModelVersion">
+            <option value="">-</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>테이블</label>
+          <select id="insightsTable">
+            <option value="">로딩 중...</option>
+          </select>
+        </div>
+        <button class="btn-primary" id="btnInsights" onclick="runInsights()">
+          분석 실행
+        </button>
+      </div>
+
+      <div class="loading" id="insightsLoading" style="display: none">
+        <div class="spinner"></div>
+        <span>분석 중... (첫 실행 시 시간이 걸릴 수 있습니다)</span>
+      </div>
+      <div class="error-msg" id="insightsError" style="display: none"></div>
+      <div id="insightsContent" style="display: none">
+        <!-- FGI by state -->
+        <div class="info-card" style="margin-bottom: 24px">
+          <h3>지역별 FGI (Fear &amp; Greed Index)</h3>
+          <p class="section-desc">
+            시/도별 평균 FGI(공포·탐욕 지수)입니다. 값이 높을수록 부동산 시장에
+            대한 기대 심리(탐욕)가 강하고, 낮을수록 위축(공포) 상태를
+            나타냅니다.
+          </p>
+          <div style="height: 320px"><canvas id="fgiStateChart"></canvas></div>
+        </div>
+        <!-- 집값 -->
+        <div
+          style="
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 24px;
+          "
+        >
+          <div class="info-card">
+            <h3 style="color: #4ecdc4">집값 상승 예상 TOP 10</h3>
+            <p class="section-desc">
+              직전 시점 대비 매매가 변화율(CHANGE_MEME_PRICE_RATE_LAG1) 평균이
+              가장 높은 시/군/구입니다.
+            </p>
+            <div style="height: 340px"><canvas id="priceUpChart"></canvas></div>
+          </div>
+          <div class="info-card">
+            <h3 style="color: #ff6b6b">집값 하락 예상 TOP 10</h3>
+            <p class="section-desc">
+              직전 시점 대비 매매가 변화율 평균이 가장 낮은(하락 폭이 큰)
+              시/군/구입니다.
+            </p>
+            <div style="height: 340px">
+              <canvas id="priceDownChart"></canvas>
+            </div>
+          </div>
+        </div>
+        <!-- 거래량 -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px">
+          <div class="info-card">
+            <h3 style="color: #4ecdc4">거래량 증가 예상 TOP 10</h3>
+            <p class="section-desc">
+              모델 예측값과 직전 실제 거래량(LAG1)을 비교해 증가율이 가장 높을
+              것으로 예상되는 시/군/구입니다.
+            </p>
+            <div style="height: 340px">
+              <canvas id="contractUpChart"></canvas>
+            </div>
+          </div>
+          <div class="info-card">
+            <h3 style="color: #ff6b6b">거래량 감소 예상 TOP 10</h3>
+            <p class="section-desc">
+              모델 예측값 기준으로 직전 대비 거래량 감소율이 가장 클 것으로
+              예상되는 시/군/구입니다.
+            </p>
+            <div style="height: 340px">
+              <canvas id="contractDownChart"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 데이터 탐색 탭 -->
+    <div class="tab-content" id="tab-explore">
+      <div class="controls">
+        <div class="control-group">
+          <label>테이블</label>
+          <select id="exploreTable">
+            <option value="">로딩 중...</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>지역</label>
+          <select id="exploreState">
+            <option value="">전체</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>행 수</label>
+          <input
+            type="number"
+            id="exploreLimit"
+            value="100"
+            min="1"
+            max="1000"
+          />
+        </div>
+        <button class="btn-primary" onclick="loadExploreData()">조회</button>
+      </div>
+      <div class="loading" id="exploreLoading" style="display: none">
+        <div class="spinner"></div>
+        <span>데이터 조회 중...</span>
+      </div>
+      <div id="exploreContent"></div>
+      <div class="error-msg" id="exploreError" style="display: none"></div>
+    </div>
+
+    <script>
+      const charts = {};
+      let modelsData = [];
+
+      function buildOptgroups(grouped) {
+        return Object.entries(grouped)
+          .map(
+            ([prefix, names]) =>
+              `<optgroup label="${prefix}">${names.map((n) => `<option value="${n}">${n}</option>`).join('')}</optgroup>`,
+          )
+          .join('');
+      }
+
+      async function loadTables() {
+        try {
+          const data = await apiFetch('/api/tables');
+          // 예측/인사이트: FEATURE_ 테이블만
+          const featureOpts = buildOptgroups(data.feature_grouped);
+          document.getElementById('predictTable').innerHTML = featureOpts;
+          document.getElementById('insightsTable').innerHTML = featureOpts;
+          // 탐색: 전체 테이블
+          document.getElementById('exploreTable').innerHTML = buildOptgroups(
+            data.grouped,
+          );
+          // 필터 초기화
+          loadFilters('predictTable', 'predictState', 'predictCity');
+          loadFilters('exploreTable', 'exploreState', null);
+        } catch (e) {
+          console.error('테이블 목록 로드 실패:', e);
+        }
+      }
+
+      async function loadModels() {
+        try {
+          const data = await apiFetch('/api/models');
+          modelsData = data.models;
+          const opts = modelsData
+            .map((m) => `<option value="${m.name}">${m.name}</option>`)
+            .join('');
+          document.getElementById('predictModelName').innerHTML = opts;
+          document.getElementById('insightsModelName').innerHTML = opts;
+          onModelNameChange();
+          onInsightsModelNameChange();
+        } catch (e) {
+          console.error('모델 목록 로드 실패:', e);
+        }
+      }
+
+      function onModelNameChange() {
+        const name = document.getElementById('predictModelName').value;
+        const model = modelsData.find((m) => m.name === name);
+        const verSel = document.getElementById('predictModelVersion');
+        verSel.innerHTML = model
+          ? model.versions
+              .map((v) => `<option value="${v}">${v}</option>`)
+              .join('')
+          : '<option value="">-</option>';
+      }
+
+      function onInsightsModelNameChange() {
+        const name = document.getElementById('insightsModelName').value;
+        const model = modelsData.find((m) => m.name === name);
+        const verSel = document.getElementById('insightsModelVersion');
+        verSel.innerHTML = model
+          ? model.versions
+              .map((v) => `<option value="${v}">${v}</option>`)
+              .join('')
+          : '<option value="">-</option>';
+      }
+
+      async function runInsights() {
+        const btn = document.getElementById('btnInsights');
+        const loading = document.getElementById('insightsLoading');
+        const errorEl = document.getElementById('insightsError');
+        const content = document.getElementById('insightsContent');
+
+        btn.disabled = true;
+        loading.style.display = 'flex';
+        errorEl.style.display = 'none';
+        content.style.display = 'none';
+
+        const body = {
+          table: document.getElementById('insightsTable').value,
+          model_name: document.getElementById('insightsModelName').value,
+          model_version: document.getElementById('insightsModelVersion').value,
+          limit: 5000,
+        };
+
+        try {
+          const data = await apiFetch('/api/insights', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+
+          if (data.status === 'empty') {
+            errorEl.textContent = '데이터가 없습니다.';
+            errorEl.style.display = 'block';
+            return;
+          }
+
+          if (data.fgi_by_state) renderFgiStateChart(data.fgi_by_state);
+          if (data.price_top10_up)
+            renderHbarChart(
+              'priceUpChart',
+              data.price_top10_up,
+              'rgba(78,205,196,0.75)',
+              '집값 변화율 (%)',
+            );
+          if (data.price_top10_down)
+            renderHbarChart(
+              'priceDownChart',
+              data.price_top10_down,
+              'rgba(255,107,107,0.75)',
+              '집값 변화율 (%)',
+            );
+          if (data.contract_top10_up)
+            renderHbarChart(
+              'contractUpChart',
+              data.contract_top10_up,
+              'rgba(78,205,196,0.75)',
+              '거래량 변화율 (%)',
+            );
+          if (data.contract_top10_down)
+            renderHbarChart(
+              'contractDownChart',
+              data.contract_top10_down,
+              'rgba(255,107,107,0.75)',
+              '거래량 변화율 (%)',
+            );
+
+          content.style.display = 'block';
+        } catch (e) {
+          errorEl.textContent = '분석 실패: ' + e.message;
+          errorEl.style.display = 'block';
+        } finally {
+          btn.disabled = false;
+          loading.style.display = 'none';
+        }
+      }
+
+      function renderFgiStateChart(fgi) {
+        destroyChart('fgiState');
+        const ctx = document.getElementById('fgiStateChart').getContext('2d');
+        charts['fgiState'] = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: fgi.labels,
+            datasets: [
+              {
+                label: 'FGI (평균)',
+                data: fgi.values,
+                backgroundColor: fgi.values.map((v) =>
+                  v >= 60
+                    ? 'rgba(103, 137, 230, 1)'
+                    : v >= 40
+                      ? 'rgba(255,193,7,0.75)'
+                      : 'rgba(78,205,196,0.75)',
+                ),
+                borderWidth: 1,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  afterLabel: (ctx) => {
+                    const v = ctx.raw;
+                    return v >= 60
+                      ? '공포 구간'
+                      : v >= 40
+                        ? '중립'
+                        : '탐욕 구간';
+                  },
+                },
+              },
+            },
+            scales: {
+              y: { min: 500, max: 2000, title: { display: true, text: 'FGI' } },
+            },
+          },
+        });
+      }
+
+      function renderHbarChart(canvasId, chartData, color, xLabel) {
+        const key = canvasId;
+        destroyChart(key);
+        const ctx = document.getElementById(canvasId).getContext('2d');
+        charts[key] = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: chartData.labels,
+            datasets: [
+              {
+                data: chartData.values,
+                backgroundColor: color,
+                borderWidth: 1,
+              },
+            ],
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { title: { display: true, text: xLabel } },
+              y: { ticks: { font: { size: 11 } } },
+            },
+          },
+        });
+      }
+
+      document.querySelectorAll('.tab').forEach((tab) => {
+        tab.addEventListener('click', () => {
+          document
+            .querySelectorAll('.tab')
+            .forEach((t) => t.classList.remove('active'));
+          document
+            .querySelectorAll('.tab-content')
+            .forEach((c) => c.classList.remove('active'));
+          tab.classList.add('active');
+          document
+            .getElementById('tab-' + tab.dataset.tab)
+            .classList.add('active');
+
+        });
+      });
+
+      async function apiFetch(url, options = {}) {
+        const resp = await fetch(url, options);
+        if (!resp.ok) {
+          const err = await resp
+            .json()
+            .catch(() => ({ detail: resp.statusText }));
+          throw new Error(err.detail || '요청 실패');
+        }
+        return resp.json();
+      }
+
+      async function checkHealth() {
+        const el = document.getElementById('connectionStatus');
+        try {
+          const data = await apiFetch('/api/health');
+          if (data.snowflake === 'connected') {
+            el.textContent = '연결됨';
+            el.className = 'nav-status connected';
+          } else {
+            el.textContent = '연결 실패';
+            el.className = 'nav-status disconnected';
+          }
+        } catch {
+          el.textContent = '서버 오류';
+          el.className = 'nav-status disconnected';
+        }
+      }
+
+      let filtersCache = {};
+
+      async function loadFilters(tableSelectId, stateSelectId, citySelectId) {
+        const table = document.getElementById(tableSelectId).value;
+        const stateSelect = document.getElementById(stateSelectId);
+        const citySelect = citySelectId
+          ? document.getElementById(citySelectId)
+          : null;
+
+        try {
+          const data = await apiFetch('/api/filters/' + table);
+          filtersCache = data;
+
+          stateSelect.innerHTML = '<option value="">전체</option>';
+          data.states.forEach((s) => {
+            stateSelect.innerHTML += `<option value="${s}">${s}</option>`;
+          });
+
+          if (citySelect) {
+            citySelect.innerHTML = '<option value="">전체</option>';
+          }
+        } catch (e) {
+          console.error('필터 로드 실패:', e);
+        }
+      }
+
+      document.getElementById('predictTable').addEventListener('change', () => {
+        loadFilters('predictTable', 'predictState', 'predictCity');
+      });
+
+      document.getElementById('predictState').addEventListener('change', () => {
+        const state = document.getElementById('predictState').value;
+        const citySelect = document.getElementById('predictCity');
+        citySelect.innerHTML = '<option value="">전체</option>';
+        if (
+          state &&
+          filtersCache.cities_by_state &&
+          filtersCache.cities_by_state[state]
+        ) {
+          filtersCache.cities_by_state[state].forEach((c) => {
+            citySelect.innerHTML += `<option value="${c}">${c}</option>`;
+          });
+        }
+      });
+
+      document.getElementById('exploreTable').addEventListener('change', () => {
+        loadFilters('exploreTable', 'exploreState', null);
+      });
+
+      function destroyChart(id) {
+        if (charts[id]) {
+          charts[id].destroy();
+          delete charts[id];
+        }
+      }
+
+      async function runPredict() {
+        const btn = document.getElementById('btnPredict');
+        const loading = document.getElementById('predictLoading');
+        const errorEl = document.getElementById('predictError');
+
+        btn.disabled = true;
+        loading.style.display = 'flex';
+        errorEl.style.display = 'none';
+        document.getElementById('metricsRow').style.display = 'none';
+        document.getElementById('metricsDesc').style.display = 'none';
+        document.getElementById('chartsRow').style.display = 'none';
+        document.getElementById('chartsRow2').style.display = 'none';
+        document.getElementById('predictTable-container').style.display =
+          'none';
+
+        const body = {
+          table: document.getElementById('predictTable').value,
+          state: document.getElementById('predictState').value || null,
+          city: document.getElementById('predictCity').value || null,
+          limit: parseInt(document.getElementById('predictLimit').value) || 500,
+          model_name: document.getElementById('predictModelName').value,
+          model_version: document.getElementById('predictModelVersion').value,
+        };
+
+        try {
+          const data = await apiFetch('/api/predict', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+
+          if (data.status === 'empty') {
+            errorEl.textContent = data.message;
+            errorEl.style.display = 'block';
+            return;
+          }
+
+          if (data.metrics) {
+            document.getElementById('metricMAE').textContent = data.metrics.mae;
+            document.getElementById('metricRMSE').textContent =
+              data.metrics.rmse;
+            document.getElementById('metricR2').textContent = data.metrics.r2;
+            document.getElementById('metricCount').textContent =
+              data.metrics.count + '건';
+            document.getElementById('metricsRow').style.display = 'flex';
+            document.getElementById('metricsDesc').style.display = 'block';
+          }
+
+          if (data.chart_data) {
+            document.getElementById('chartsRow').style.display = 'grid';
+            document.getElementById('chartsRow2').style.display = 'grid';
+            renderScatterChart(data.chart_data);
+            renderResidualChart(data.chart_data);
+            if (data.chart_data.monthly)
+              renderMonthlyChart(data.chart_data.monthly);
+            if (data.chart_data.by_state)
+              renderStateChart(data.chart_data.by_state);
+          }
+
+          if (data.data && data.data.length > 0) {
+            renderTable(data.data, data.total_rows);
+            document.getElementById('predictTable-container').style.display =
+              'block';
+          }
+        } catch (e) {
+          errorEl.textContent = '예측 실패: ' + e.message;
+          errorEl.style.display = 'block';
+        } finally {
+          btn.disabled = false;
+          loading.style.display = 'none';
+        }
+      }
+
+      function renderScatterChart(chartData) {
+        destroyChart('scatter');
+        const ctx = document.getElementById('scatterChart').getContext('2d');
+        const points = chartData.actual.map((a, i) => ({
+          x: a,
+          y: chartData.predicted[i],
+        }));
+        const maxVal = Math.max(...chartData.actual, ...chartData.predicted);
+
+        charts['scatter'] = new Chart(ctx, {
+          type: 'scatter',
+          data: {
+            datasets: [
+              {
+                label: 'Predicted vs Actual',
+                data: points,
+                backgroundColor: 'rgba(78,205,196,0.5)',
+                pointRadius: 3,
+              },
+              {
+                label: 'Perfect',
+                data: [
+                  { x: 0, y: 0 },
+                  { x: maxVal, y: maxVal },
+                ],
+                type: 'line',
+                borderColor: '#FF6B6B',
+                borderDash: [5, 5],
+                pointRadius: 0,
+                borderWidth: 2,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { position: 'bottom' } },
+            scales: {
+              x: { title: { display: true, text: 'Actual' } },
+              y: { title: { display: true, text: 'Predicted' } },
+            },
+          },
+        });
+      }
+
+      function renderResidualChart(chartData) {
+        destroyChart('residual');
+        const ctx = document.getElementById('residualChart').getContext('2d');
+        const residuals = chartData.actual.map(
+          (a, i) => a - chartData.predicted[i],
+        );
+
+        const min = Math.min(...residuals);
+        const max = Math.max(...residuals);
+        const binCount = 30;
+        const binSize = (max - min) / binCount || 1;
+        const bins = Array(binCount).fill(0);
+        const labels = [];
+        for (let i = 0; i < binCount; i++) {
+          labels.push(Math.round(min + i * binSize));
+          residuals.forEach((r) => {
+            const idx = Math.min(Math.floor((r - min) / binSize), binCount - 1);
+            if (idx === i) bins[i]++;
+          });
+        }
+
+        charts['residual'] = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [
+              {
+                label: '잔차 빈도',
+                data: bins,
+                backgroundColor: 'rgba(255,107,107,0.6)',
+                borderColor: 'rgba(255,107,107,1)',
+                borderWidth: 1,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: {
+                title: { display: true, text: 'Residual (Actual - Predicted)' },
+              },
+              y: { title: { display: true, text: 'Count' } },
+            },
+          },
+        });
+      }
+
+      function renderMonthlyChart(monthly) {
+        destroyChart('monthly');
+        const ctx = document.getElementById('monthlyChart').getContext('2d');
+        charts['monthly'] = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: monthly.labels,
+            datasets: [
+              {
+                label: '실제 평균',
+                data: monthly.actual_avg,
+                borderColor: '#FF6B6B',
+                backgroundColor: 'rgba(255,107,107,0.1)',
+                fill: true,
+                tension: 0.3,
+              },
+              {
+                label: '예측 평균',
+                data: monthly.predicted_avg,
+                borderColor: '#4ECDC4',
+                backgroundColor: 'rgba(78,205,196,0.1)',
+                fill: true,
+                tension: 0.3,
+                borderDash: [5, 5],
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { position: 'bottom' } },
+            scales: {
+              x: { ticks: { maxRotation: 45 } },
+              y: { title: { display: true, text: '평균 거래량' } },
+            },
+          },
+        });
+      }
+
+      function renderStateChart(byState) {
+        destroyChart('state');
+        const ctx = document.getElementById('stateChart').getContext('2d');
+        charts['state'] = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: byState.labels,
+            datasets: [
+              {
+                label: '실제 평균',
+                data: byState.actual_avg,
+                backgroundColor: 'rgba(255,107,107,0.7)',
+              },
+              {
+                label: '예측 평균',
+                data: byState.predicted_avg,
+                backgroundColor: 'rgba(78,205,196,0.7)',
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { position: 'bottom' } },
+            scales: {
+              x: { ticks: { maxRotation: 45 } },
+              y: { title: { display: true, text: '평균 거래량' } },
+            },
+          },
+        });
+      }
+
+      function renderTable(data, totalRows) {
+        const head = document.getElementById('resultHead');
+        const body = document.getElementById('resultBody');
+        document.getElementById('tableRowCount').textContent =
+          `(${data.length} / ${totalRows}건)`;
+
+        const cols = Object.keys(data[0]);
+        head.innerHTML =
+          '<tr>' + cols.map((c) => `<th>${c}</th>`).join('') + '</tr>';
+        body.innerHTML = data
+          .map(
+            (row) =>
+              '<tr>' +
+              cols
+                .map((c) => {
+                  let val = row[c];
+                  if (typeof val === 'number')
+                    val = val.toFixed ? val.toFixed(2) : val;
+                  return `<td>${val ?? ''}</td>`;
+                })
+                .join('') +
+              '</tr>',
+          )
+          .join('');
+      }
+
+      async function loadExploreData() {
+        const content = document.getElementById('exploreContent');
+        const loading = document.getElementById('exploreLoading');
+        const errorEl = document.getElementById('exploreError');
+
+        loading.style.display = 'flex';
+        errorEl.style.display = 'none';
+        content.innerHTML = '';
+
+        const table = document.getElementById('exploreTable').value;
+        const state = document.getElementById('exploreState').value;
+        const limit = document.getElementById('exploreLimit').value;
+
+        let url = `/api/data/${table}?limit=${limit}`;
+        if (state) url += `&state=${encodeURIComponent(state)}`;
+
+        try {
+          const data = await apiFetch(url);
+
+          let html = `<p>총 ${data.total_rows}건 중 ${data.returned_rows}건 표시</p>`;
+
+          if (data.stats) {
+            html += `<h3>기초 통계량</h3><div class="table-wrapper"><table><thead><tr><th>컬럼</th><th>평균</th><th>표준편차</th><th>최소</th><th>최대</th></tr></thead><tbody>`;
+            for (const [col, s] of Object.entries(data.stats)) {
+              html += `<tr><td>${col}</td><td>${s.mean}</td><td>${s.std}</td><td>${s.min}</td><td>${s.max}</td></tr>`;
+            }
+            html += `</tbody></table></div>`;
+          }
+
+          if (data.data.length > 0) {
+            const cols = data.columns.slice(0, 15);
+            html += `<h3>데이터 미리보기</h3><div class="table-wrapper"><table><thead><tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>`;
+            data.data.forEach((row) => {
+              html +=
+                '<tr>' +
+                cols
+                  .map((c) => {
+                    let v = row[c];
+                    if (typeof v === 'number') v = v.toFixed ? v.toFixed(4) : v;
+                    return `<td>${v ?? ''}</td>`;
+                  })
+                  .join('') +
+                '</tr>';
+            });
+            html += `</tbody></table></div>`;
+          }
+
+          content.innerHTML = html;
+        } catch (e) {
+          errorEl.textContent = '데이터 조회 실패: ' + e.message;
+          errorEl.style.display = 'block';
+        } finally {
+          loading.style.display = 'none';
+        }
+      }
+
+      checkHealth();
+      loadModels();
+      loadTables();
+    </script>
+  </body>
+</html>
